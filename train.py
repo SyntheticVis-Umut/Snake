@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-path", type=str, default="models/dqn_snake.pt")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to continue training")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help='Device to use: "auto", "cuda", "cpu", or explicit device id (e.g., "cuda:0")',
+    )
     return parser.parse_args()
 
 
@@ -43,7 +49,12 @@ def set_seed(seed: int) -> None:
 
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(args.device)
+    if device.type == "cuda":
+        gpu_name = torch.cuda.get_device_name(device)
+        print(f"Using CUDA device: {gpu_name}")
+    else:
+        print("CUDA not available; falling back to CPU.")
     env = SnakeEnv(grid_size=tuple(args.grid), render_mode=None, seed=args.seed)
 
     state_dim = env.reset().shape[0]
@@ -155,6 +166,16 @@ def optimize_model(
     loss.backward()
     optimizer.step()
     return loss.item()
+
+
+def _resolve_device(device_arg: str) -> torch.device:
+    if device_arg == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device(device_arg)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA requested but not available on this machine.")
+    return device
 
 
 if __name__ == "__main__":
