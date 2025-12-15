@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Global norm gradient clipping value; set <=0 to disable",
     )
+    parser.add_argument(
+        "--double-dqn",
+        action="store_true",
+        default=True,
+        help="Use Double DQN target selection (on by default)",
+    )
     return parser.parse_args()
 
 
@@ -119,6 +125,7 @@ def train(args: argparse.Namespace) -> None:
                     args.gamma,
                     device,
                     args.grad_clip,
+                    args.double_dqn,
                 )
 
             if frame_idx % args.target_update == 0:
@@ -161,12 +168,17 @@ def optimize_model(
     gamma: float,
     device: torch.device,
     grad_clip: float,
+    double_dqn: bool,
 ):
     states, actions, rewards, next_states, dones = memory.sample(batch_size, device)
 
     q_values = policy_net(states).gather(1, actions)
     with torch.no_grad():
-        next_q_values = target_net(next_states).max(1, keepdim=True).values
+        if double_dqn:
+            next_actions = policy_net(next_states).argmax(1, keepdim=True)
+            next_q_values = target_net(next_states).gather(1, next_actions)
+        else:
+            next_q_values = target_net(next_states).max(1, keepdim=True).values
         targets = rewards + gamma * (1 - dones) * next_q_values
 
     loss = criterion(q_values, targets)
