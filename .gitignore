@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.pyc
+models/*.pt
+models/*.pth
+*.log
+
+
