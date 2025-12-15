@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help='Device to use: "auto", "cuda", "cpu", or explicit device id (e.g., "cuda:0")',
     )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Global norm gradient clipping value; set <=0 to disable",
+    )
     return parser.parse_args()
 
 
@@ -67,7 +73,7 @@ def train(args: argparse.Namespace) -> None:
 
     optimizer = make_optimizer(policy_net, lr=args.lr)
     memory = ReplayBuffer(args.buffer_size)
-    criterion = nn.MSELoss()
+    criterion = nn.SmoothL1Loss()
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
@@ -112,6 +118,7 @@ def train(args: argparse.Namespace) -> None:
                     args.batch_size,
                     args.gamma,
                     device,
+                    args.grad_clip,
                 )
 
             if frame_idx % args.target_update == 0:
@@ -153,6 +160,7 @@ def optimize_model(
     batch_size: int,
     gamma: float,
     device: torch.device,
+    grad_clip: float,
 ):
     states, actions, rewards, next_states, dones = memory.sample(batch_size, device)
 
@@ -164,6 +172,8 @@ def optimize_model(
     loss = criterion(q_values, targets)
     optimizer.zero_grad()
     loss.backward()
+    if grad_clip and grad_clip > 0:
+        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), grad_clip)
     optimizer.step()
     return loss.item()
 

@@ -5,6 +5,7 @@ import random
 from collections import deque
 from typing import Deque, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -20,14 +21,14 @@ class ReplayBuffer:
 
     def sample(self, batch_size: int, device: torch.device):
         batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = map(
-            lambda x: torch.tensor(x, device=device),
-            zip(*batch),
-        )
-        action = action.long().unsqueeze(1)
-        reward = reward.float().unsqueeze(1)
-        done = done.float().unsqueeze(1)
-        return state.float(), action, reward, next_state.float(), done
+        state, action, reward, next_state, done = map(np.array, zip(*batch))
+
+        state = torch.tensor(state, device=device, dtype=torch.float32)
+        action = torch.tensor(action, device=device, dtype=torch.long).unsqueeze(1)
+        reward = torch.tensor(reward, device=device, dtype=torch.float32).unsqueeze(1)
+        done = torch.tensor(done, device=device, dtype=torch.float32).unsqueeze(1)
+        next_state = torch.tensor(next_state, device=device, dtype=torch.float32)
+        return state, action, reward, next_state, done
 
     def __len__(self) -> int:
         return len(self.buffer)
