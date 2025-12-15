@@ -48,6 +48,18 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Use Double DQN target selection (on by default)",
     )
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=0,
+        help="Run greedy evaluation every N episodes (0 disables)",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of episodes per evaluation run",
+    )
     return parser.parse_args()
 
 
@@ -68,6 +80,11 @@ def train(args: argparse.Namespace) -> None:
     else:
         print("CUDA not available; falling back to CPU.")
     env = SnakeEnv(grid_size=tuple(args.grid), render_mode=None, seed=args.seed)
+    eval_env = (
+        SnakeEnv(grid_size=tuple(args.grid), render_mode=None, seed=args.seed + 1234)
+        if args.eval_every > 0
+        else None
+    )
 
     state_dim = env.reset().shape[0]
     action_dim = len(env.ACTIONS)
@@ -85,6 +102,7 @@ def train(args: argparse.Namespace) -> None:
 
     frame_idx = 0
     best_score = float("-inf")
+    best_eval = float("-inf")
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
@@ -141,9 +159,32 @@ def train(args: argparse.Namespace) -> None:
                     "policy_state_dict": policy_net.state_dict(),
                     "args": vars(args),
                     "best_score": best_score,
+                    "best_eval": best_eval,
                 },
                 args.save_path,
             )
+
+        if eval_env and args.eval_every > 0 and episode % args.eval_every == 0:
+            eval_stats = evaluate_policy(
+                policy_net, eval_env, args.eval_episodes, device, args.max_steps
+            )
+            mean_r, median_r, max_r, std_r = eval_stats
+            print(
+                f"[Eval @ episode {episode}] "
+                f"mean: {mean_r:.2f} median: {median_r:.2f} "
+                f"max: {max_r:.2f} std: {std_r:.2f}"
+            )
+            if mean_r > best_eval:
+                best_eval = mean_r
+                torch.save(
+                    {
+                        "policy_state_dict": policy_net.state_dict(),
+                        "args": vars(args),
+                        "best_score": best_score,
+                        "best_eval": best_eval,
+                    },
+                    args.save_path,
+                )
 
         if episode % 10 == 0 or episode == 1:
             print(
@@ -154,7 +195,11 @@ def train(args: argparse.Namespace) -> None:
             )
 
     env.close()
+    if eval_env:
+        eval_env.close()
     print(f"Training complete. Best episodic reward: {best_score:.2f}")
+    if best_eval > float("-inf"):
+        print(f"Best eval mean reward: {best_eval:.2f}")
     print(f"Model saved to: {args.save_path}")
 
 
@@ -188,6 +233,38 @@ def optimize_model(
         torch.nn.utils.clip_grad_norm_(policy_net.parameters(), grad_clip)
     optimizer.step()
     return loss.item()
+
+
+def evaluate_policy(
+    policy_net: QNetwork,
+    env: SnakeEnv,
+    episodes: int,
+    device: torch.device,
+    max_steps: int,
+):
+    rewards = []
+    policy_net.eval()
+    with torch.no_grad():
+        for idx in range(episodes):
+            state = env.reset(seed=idx)
+            ep_reward = 0.0
+            for _ in range(max_steps):
+                state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
+                q_values = policy_net(state_v)
+                action = int(torch.argmax(q_values).item())
+                state, reward, done, _ = env.step(action)
+                ep_reward += reward
+                if done:
+                    break
+            rewards.append(ep_reward)
+    policy_net.train()
+    rewards_arr = np.array(rewards, dtype=np.float32)
+    return (
+        float(rewards_arr.mean()),
+        float(np.median(rewards_arr)),
+        float(rewards_arr.max()),
+        float(rewards_arr.std()),
+    )
 
 
 def _resolve_device(device_arg: str) -> torch.device:
