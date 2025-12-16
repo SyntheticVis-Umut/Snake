@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.dqn import QNetwork, ReplayBuffer, compute_epsilon, make_optimizer
+from src.dqn import QNetwork, CNNQNetwork, ReplayBuffer, compute_epsilon, make_optimizer
 from src.env import SnakeEnv
 
 
@@ -60,6 +60,19 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Number of episodes per evaluation run",
     )
+    parser.add_argument(
+        "--observation-type",
+        type=str,
+        default="features",
+        choices=["features", "image"],
+        help="Observation type: 'features' (11 booleans) or 'image' (3-channel CNN input)",
+    )
+    parser.add_argument(
+        "--n-step",
+        type=int,
+        default=1,
+        help="n-step returns (1 = standard, >1 for multi-step learning)",
+    )
     return parser.parse_args()
 
 
@@ -79,23 +92,42 @@ def train(args: argparse.Namespace) -> None:
         print(f"Using CUDA device: {gpu_name}")
     else:
         print("CUDA not available; falling back to CPU.")
-    env = SnakeEnv(grid_size=tuple(args.grid), render_mode=None, seed=args.seed)
+    env = SnakeEnv(
+        grid_size=tuple(args.grid),
+        render_mode=None,
+        seed=args.seed,
+        observation_type=args.observation_type,
+    )
     eval_env = (
-        SnakeEnv(grid_size=tuple(args.grid), render_mode=None, seed=args.seed + 1234)
+        SnakeEnv(
+            grid_size=tuple(args.grid),
+            render_mode=None,
+            seed=args.seed + 1234,
+            observation_type=args.observation_type,
+        )
         if args.eval_every > 0
         else None
     )
 
-    state_dim = env.reset().shape[0]
+    sample_state = env.reset()
     action_dim = len(env.ACTIONS)
 
-    policy_net = QNetwork(state_dim, action_dim).to(device)
-    target_net = QNetwork(state_dim, action_dim).to(device)
+    # Create appropriate network based on observation type
+    if args.observation_type == "image":
+        # CNN for image observations
+        policy_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim).to(device)
+        target_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim).to(device)
+    else:
+        # MLP for feature observations
+        state_dim = sample_state.shape[0]
+        policy_net = QNetwork(state_dim, action_dim).to(device)
+        target_net = QNetwork(state_dim, action_dim).to(device)
+    
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = make_optimizer(policy_net, lr=args.lr)
-    memory = ReplayBuffer(args.buffer_size)
+    memory = ReplayBuffer(args.buffer_size, n_step=args.n_step, gamma=args.gamma)
     criterion = nn.SmoothL1Loss()
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
@@ -121,7 +153,12 @@ def train(args: argparse.Namespace) -> None:
                 action = random.choice(env.ACTIONS)
             else:
                 with torch.no_grad():
-                    state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
+                    if args.observation_type == "image":
+                        # Image: (C, H, W) -> (1, C, H, W)
+                        state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
+                    else:
+                        # Features: (features,) -> (1, features)
+                        state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
                     q_values = policy_net(state_v)
                     action = int(torch.argmax(q_values).item())
 
@@ -166,7 +203,7 @@ def train(args: argparse.Namespace) -> None:
 
         if eval_env and args.eval_every > 0 and episode % args.eval_every == 0:
             eval_stats = evaluate_policy(
-                policy_net, eval_env, args.eval_episodes, device, args.max_steps
+                policy_net, eval_env, args.eval_episodes, device, args.max_steps, args.observation_type
             )
             mean_r, median_r, max_r, std_r = eval_stats
             print(
@@ -182,9 +219,9 @@ def train(args: argparse.Namespace) -> None:
                         "args": vars(args),
                         "best_score": best_score,
                         "best_eval": best_eval,
-                    },
-                    args.save_path,
-                )
+                },
+                args.save_path,
+            )
 
         if episode % 10 == 0 or episode == 1:
             print(
@@ -236,11 +273,12 @@ def optimize_model(
 
 
 def evaluate_policy(
-    policy_net: QNetwork,
+    policy_net,
     env: SnakeEnv,
     episodes: int,
     device: torch.device,
     max_steps: int,
+    observation_type: str = "features",
 ):
     rewards = []
     policy_net.eval()
@@ -249,7 +287,12 @@ def evaluate_policy(
             state = env.reset(seed=idx)
             ep_reward = 0.0
             for _ in range(max_steps):
-                state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
+                if observation_type == "image":
+                    # Image: (C, H, W) -> (1, C, H, W)
+                    state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
+                else:
+                    # Features: (features,) -> (1, features)
+                    state_v = torch.tensor(state, device=device, dtype=torch.float32).unsqueeze(0)
                 q_values = policy_net(state_v)
                 action = int(torch.argmax(q_values).item())
                 state, reward, done, _ = env.step(action)

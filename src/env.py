@@ -17,8 +17,10 @@ class SnakeEnv:
         grid_size: Tuple[int, int] = (20, 20),
         render_mode: Optional[str] = None,
         seed: Optional[int] = None,
+        observation_type: str = "features",  # "features" or "image"
     ) -> None:
         self.game = SnakeGame(grid_size=grid_size, render_mode=render_mode, seed=seed)
+        self.observation_type = observation_type
         self.directions = [
             DIRECTIONS["UP"],
             DIRECTIONS["RIGHT"],
@@ -68,6 +70,13 @@ class SnakeEnv:
         return -0.1
 
     def _encode_state(self) -> np.ndarray:
+        if self.observation_type == "image":
+            return self._encode_image_state()
+        else:
+            return self._encode_feature_state()
+
+    def _encode_feature_state(self) -> np.ndarray:
+        """Original 11-feature state encoding."""
         head_x, head_y = self.game.snake[0]
         dir_x, dir_y = self.game.direction
 
@@ -103,6 +112,32 @@ class SnakeEnv:
             ],
             dtype=np.float32,
         )
+        return state
+
+    def _encode_image_state(self) -> np.ndarray:
+        """CNN-friendly image state: 3 channels (body, head, food)."""
+        h, w = self.game.grid_height, self.game.grid_width
+        # Channel 0: snake body (1 where body exists, 0 otherwise)
+        # Channel 1: snake head (1 at head position, 0 otherwise)
+        # Channel 2: food (1 at food position, 0 otherwise)
+        state = np.zeros((3, h, w), dtype=np.float32)
+        
+        # Channel 0: body (all snake segments)
+        for x, y in self.game.snake:
+            if 0 <= x < w and 0 <= y < h:
+                state[0, y, x] = 1.0
+        
+        # Channel 1: head (only first segment)
+        if self.game.snake:
+            head_x, head_y = self.game.snake[0]
+            if 0 <= head_x < w and 0 <= head_y < h:
+                state[1, head_y, head_x] = 1.0
+        
+        # Channel 2: food
+        food_x, food_y = self.game.food
+        if 0 <= food_x < w and 0 <= food_y < h:
+            state[2, food_y, food_x] = 1.0
+        
         return state
 
     def _is_danger(self, pos) -> bool:
