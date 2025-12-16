@@ -35,7 +35,7 @@ class ReplayBuffer:
 
 
 class QNetwork(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden: int = 128) -> None:
+    def __init__(self, input_dim: int, output_dim: int, hidden: int = 256) -> None:
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden),

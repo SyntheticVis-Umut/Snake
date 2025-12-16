@@ -26,8 +26,12 @@ def main():
     action_dim = len(env.ACTIONS)
 
     checkpoint = torch.load(args.model, map_location=device)
-    model = QNetwork(state_dim, action_dim).to(device)
-    model.load_state_dict(checkpoint["policy_state_dict"])
+    # Infer hidden size from checkpoint weights (first hidden layer)
+    policy_state = checkpoint["policy_state_dict"]
+    # net.0.weight shape is [hidden_size, input_dim]
+    hidden_size = policy_state["net.0.weight"].shape[0]
+    model = QNetwork(state_dim, action_dim, hidden=hidden_size).to(device)
+    model.load_state_dict(policy_state)
     model.eval()
 
     for ep in range(1, args.episodes + 1):
