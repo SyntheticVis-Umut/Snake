@@ -25,6 +25,7 @@ def main():
     checkpoint_args = checkpoint.get("args", {})
     observation_type = checkpoint_args.get("observation_type", "features")
     grid_size = checkpoint_args.get("grid", args.grid)
+    dueling = checkpoint_args.get("dueling", False)
     
     env = SnakeEnv(
         grid_size=tuple(grid_size),
@@ -38,13 +39,13 @@ def main():
     # Determine model type from checkpoint
     if observation_type == "image" or "conv.0.weight" in policy_state:
         # CNN model
-        model = CNNQNetwork(grid_size=tuple(grid_size), output_dim=action_dim).to(device)
+        model = CNNQNetwork(grid_size=tuple(grid_size), output_dim=action_dim, dueling=dueling).to(device)
     else:
         # MLP model - infer hidden size from weights
         sample_state = env.reset()
         state_dim = sample_state.shape[0]
         hidden_size = policy_state["net.0.weight"].shape[0]
-        model = QNetwork(state_dim, action_dim, hidden=hidden_size).to(device)
+        model = QNetwork(state_dim, action_dim, hidden=hidden_size, dueling=dueling).to(device)
     
     model.load_state_dict(policy_state)
     model.eval()

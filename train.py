@@ -73,6 +73,24 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="n-step returns (1 = standard, >1 for multi-step learning)",
     )
+    parser.add_argument(
+        "--dueling",
+        action="store_true",
+        default=True,
+        help="Use dueling architecture (value + advantage heads)",
+    )
+    parser.add_argument(
+        "--per-alpha",
+        type=float,
+        default=0.6,
+        help="Prioritized replay alpha (0 = uniform, higher = more priority focus)",
+    )
+    parser.add_argument(
+        "--per-beta",
+        type=float,
+        default=0.4,
+        help="Prioritized replay beta for importance sampling weights",
+    )
     return parser.parse_args()
 
 
@@ -115,19 +133,19 @@ def train(args: argparse.Namespace) -> None:
     # Create appropriate network based on observation type
     if args.observation_type == "image":
         # CNN for image observations
-        policy_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim).to(device)
-        target_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim).to(device)
+        policy_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim, dueling=args.dueling).to(device)
+        target_net = CNNQNetwork(grid_size=tuple(args.grid), output_dim=action_dim, dueling=args.dueling).to(device)
     else:
         # MLP for feature observations
         state_dim = sample_state.shape[0]
-        policy_net = QNetwork(state_dim, action_dim).to(device)
-        target_net = QNetwork(state_dim, action_dim).to(device)
+        policy_net = QNetwork(state_dim, action_dim, dueling=args.dueling).to(device)
+        target_net = QNetwork(state_dim, action_dim, dueling=args.dueling).to(device)
     
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = make_optimizer(policy_net, lr=args.lr)
-    memory = ReplayBuffer(args.buffer_size, n_step=args.n_step, gamma=args.gamma)
+    memory = ReplayBuffer(args.buffer_size, n_step=args.n_step, gamma=args.gamma, per_alpha=args.per_alpha)
     criterion = nn.SmoothL1Loss()
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
@@ -181,6 +199,7 @@ def train(args: argparse.Namespace) -> None:
                     device,
                     args.grad_clip,
                     args.double_dqn,
+                    args.per_beta,
                 )
 
             if frame_idx % args.target_update == 0:
@@ -251,8 +270,9 @@ def optimize_model(
     device: torch.device,
     grad_clip: float,
     double_dqn: bool,
+    per_beta: float,
 ):
-    states, actions, rewards, next_states, dones = memory.sample(batch_size, device)
+    states, actions, rewards, next_states, dones, indices, weights = memory.sample(batch_size, device, per_beta=per_beta)
 
     q_values = policy_net(states).gather(1, actions)
     with torch.no_grad():
@@ -264,11 +284,16 @@ def optimize_model(
         targets = rewards + gamma * (1 - dones) * next_q_values
 
     loss = criterion(q_values, targets)
+    loss = loss * weights  # PER importance sampling
+    loss = loss.mean()
     optimizer.zero_grad()
     loss.backward()
     if grad_clip and grad_clip > 0:
         torch.nn.utils.clip_grad_norm_(policy_net.parameters(), grad_clip)
     optimizer.step()
+    # Update priorities
+    td_errors = (targets - q_values).detach().abs().squeeze(1) + 1e-6
+    memory.update_priorities(indices, td_errors)
     return loss.item()
 
 
