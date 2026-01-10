@@ -164,7 +164,19 @@ def train(args: argparse.Namespace, drive_save_path: Optional[str] = None) -> No
     memory = ReplayBuffer(args.buffer_size, n_step=args.n_step, gamma=args.gamma, per_alpha=args.per_alpha)
     criterion = nn.SmoothL1Loss()
 
-    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+    # Ensure local save directory exists
+    local_save_dir = os.path.dirname(args.save_path)
+    if local_save_dir:
+        try:
+            os.makedirs(local_save_dir, exist_ok=True)
+            print(f"✓ Created/verified save directory: {local_save_dir}")
+        except OSError as e:
+            print(f"⚠ Warning: Could not create save directory {local_save_dir}: {e}")
+            print(f"  Current working directory: {os.getcwd()}")
+            # Try to save to current directory instead
+            if local_save_dir != "":
+                args.save_path = os.path.basename(args.save_path)
+                print(f"  Falling back to saving in current directory: {args.save_path}")
 
     frame_idx = 0
     best_score = float("-inf")
@@ -410,7 +422,13 @@ def _save_checkpoint(
     }
     
     # Save to local path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    local_dir = os.path.dirname(path)
+    if local_dir:  # Only create directory if path has a directory component
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+        except OSError as e:
+            print(f"⚠ Warning: Could not create directory {local_dir}: {e}")
+            # Try to save anyway (might work if parent dir exists)
     torch.save(checkpoint_data, path)
     
     # Also save to Google Drive if path provided
