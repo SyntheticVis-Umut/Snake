@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -91,6 +91,12 @@ def parse_args() -> argparse.Namespace:
         default=0.4,
         help="Prioritized replay beta for importance sampling weights",
     )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Save checkpoint every N episodes (0 disables)",
+    )
     return parser.parse_args()
 
 
@@ -102,7 +108,17 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def train(args: argparse.Namespace) -> None:
+def train(args: argparse.Namespace, drive_save_path: Optional[str] = None) -> None:
+    # Support drive_save_path as both parameter and args attribute
+    if drive_save_path is None:
+        drive_save_path = getattr(args, 'drive_save_path', None)
+    # Debug: Always print what we found
+    print(f"DEBUG: drive_save_path parameter = {drive_save_path}")
+    print(f"DEBUG: args.drive_save_path attribute = {getattr(args, 'drive_save_path', 'NOT SET')}")
+    if drive_save_path:
+        print(f"✓ Drive save path configured: {drive_save_path}")
+    else:
+        print("⚠ WARNING: No drive save path configured - checkpoints will NOT be saved to Drive!")
     set_seed(args.seed)
     device = _resolve_device(args.device)
     if device.type == "cuda":
@@ -153,15 +169,31 @@ def train(args: argparse.Namespace) -> None:
     frame_idx = 0
     best_score = float("-inf")
     best_eval = float("-inf")
+    start_episode = 0
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device)
-        policy_net.load_state_dict(checkpoint["policy_state_dict"])
-        target_net.load_state_dict(policy_net.state_dict())
-        best_score = checkpoint.get("best_score", best_score)
-        print(f"Resumed policy from {args.resume} (best_score={best_score})")
+        # Check if resume path exists
+        if not os.path.exists(args.resume):
+            print(f"⚠ Warning: Resume checkpoint not found at {args.resume}, starting fresh training.")
+            args.resume = None
+        else:
+            checkpoint = torch.load(args.resume, map_location=device)
+            policy_net.load_state_dict(checkpoint["policy_state_dict"])
+            target_state = checkpoint.get("target_state_dict")
+            if target_state:
+                target_net.load_state_dict(target_state)
+            else:
+                target_net.load_state_dict(policy_net.state_dict())
+            opt_state = checkpoint.get("optimizer_state_dict")
+            if opt_state:
+                optimizer.load_state_dict(opt_state)
+            best_score = checkpoint.get("best_score", best_score)
+            best_eval = checkpoint.get("best_eval", best_eval)
+            frame_idx = checkpoint.get("frame_idx", frame_idx)
+            start_episode = checkpoint.get("episode", start_episode)
+            print(f"Resumed policy from {args.resume} (best_score={best_score})")
 
-    for episode in range(1, args.episodes + 1):
+    for episode in range(start_episode + 1, args.episodes + 1):
         state = env.reset()
         episode_reward = 0.0
 
@@ -210,14 +242,17 @@ def train(args: argparse.Namespace) -> None:
 
         if episode_reward > best_score:
             best_score = episode_reward
-            torch.save(
-                {
-                    "policy_state_dict": policy_net.state_dict(),
-                    "args": vars(args),
-                    "best_score": best_score,
-                    "best_eval": best_eval,
-                },
+            _save_checkpoint(
                 args.save_path,
+                policy_net,
+                target_net,
+                optimizer,
+                args,
+                best_score,
+                best_eval,
+                episode,
+                frame_idx,
+                drive_path=drive_save_path,
             )
 
         if eval_env and args.eval_every > 0 and episode % args.eval_every == 0:
@@ -232,15 +267,18 @@ def train(args: argparse.Namespace) -> None:
             )
             if mean_r > best_eval:
                 best_eval = mean_r
-                torch.save(
-                    {
-                        "policy_state_dict": policy_net.state_dict(),
-                        "args": vars(args),
-                        "best_score": best_score,
-                        "best_eval": best_eval,
-                },
-                args.save_path,
-            )
+                _save_checkpoint(
+                    args.save_path,
+                    policy_net,
+                    target_net,
+                    optimizer,
+                    args,
+                    best_score,
+                    best_eval,
+                    episode,
+                    frame_idx,
+                    drive_path=drive_save_path,
+                )
 
         if episode % 10 == 0 or episode == 1:
             print(
@@ -248,6 +286,19 @@ def train(args: argparse.Namespace) -> None:
                 f"Reward: {episode_reward:.2f} "
                 f"Epsilon: {epsilon:.3f} "
                 f"Best: {best_score:.2f}"
+            )
+        if args.save_every and episode % args.save_every == 0:
+            _save_checkpoint(
+                args.save_path,
+                policy_net,
+                target_net,
+                optimizer,
+                args,
+                best_score,
+                best_eval,
+                episode,
+                frame_idx,
+                drive_path=drive_save_path,
             )
 
     env.close()
@@ -335,6 +386,60 @@ def evaluate_policy(
     )
 
 
+def _save_checkpoint(
+    path: str,
+    policy_net: nn.Module,
+    target_net: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    best_score: float,
+    best_eval: float,
+    episode: int,
+    frame_idx: int,
+    drive_path: Optional[str] = None,
+) -> None:
+    checkpoint_data = {
+        "policy_state_dict": policy_net.state_dict(),
+        "target_state_dict": target_net.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "args": vars(args),
+        "best_score": best_score,
+        "best_eval": best_eval,
+        "episode": episode,
+        "frame_idx": frame_idx,
+    }
+    
+    # Save to local path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(checkpoint_data, path)
+    
+    # Also save to Google Drive if path provided
+    print(f"DEBUG _save_checkpoint: drive_path = {drive_path}")
+    if drive_path:
+        try:
+            import shutil
+            # Verify Drive is accessible
+            if not os.path.exists("/content/drive"):
+                print(f"⚠ Warning: Google Drive not mounted at /content/drive. Skipping Drive save.")
+            else:
+                # Verify local file exists before copying
+                if not os.path.exists(path):
+                    print(f"⚠ Warning: Local checkpoint {path} not found. Cannot copy to Drive.")
+                else:
+                    # Copy the saved checkpoint to Drive
+                    # MyDrive directory should already exist, but ensure it does
+                    drive_dir = os.path.dirname(drive_path)
+                    if drive_dir and not os.path.exists(drive_dir):
+                        os.makedirs(drive_dir, exist_ok=True)
+                    shutil.copy2(path, drive_path)
+                    print(f"✓ Checkpoint also saved to Drive: {drive_path}")
+        except PermissionError as e:
+            print(f"⚠ Warning: Permission denied saving to Drive: {e}")
+        except Exception as e:
+            print(f"⚠ Warning: Failed to save to Drive ({drive_path}): {e}")
+            import traceback
+            traceback.print_exc()
+
 def _resolve_device(device_arg: str) -> torch.device:
     if device_arg == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -348,5 +453,4 @@ def _resolve_device(device_arg: str) -> torch.device:
 if __name__ == "__main__":
     args = parse_args()
     train(args)
-
 
