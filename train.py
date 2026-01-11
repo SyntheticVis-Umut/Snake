@@ -189,21 +189,26 @@ def train(args: argparse.Namespace, drive_save_path: Optional[str] = None) -> No
             print(f"⚠ Warning: Resume checkpoint not found at {args.resume}, starting fresh training.")
             args.resume = None
         else:
-            checkpoint = torch.load(args.resume, map_location=device)
-            policy_net.load_state_dict(checkpoint["policy_state_dict"])
-            target_state = checkpoint.get("target_state_dict")
-            if target_state:
-                target_net.load_state_dict(target_state)
-            else:
-                target_net.load_state_dict(policy_net.state_dict())
-            opt_state = checkpoint.get("optimizer_state_dict")
-            if opt_state:
-                optimizer.load_state_dict(opt_state)
-            best_score = checkpoint.get("best_score", best_score)
-            best_eval = checkpoint.get("best_eval", best_eval)
-            frame_idx = checkpoint.get("frame_idx", frame_idx)
-            start_episode = checkpoint.get("episode", start_episode)
-            print(f"Resumed policy from {args.resume} (best_score={best_score})")
+            try:
+                checkpoint = torch.load(args.resume, map_location=device)
+                policy_net.load_state_dict(checkpoint["policy_state_dict"])
+                target_state = checkpoint.get("target_state_dict")
+                if target_state:
+                    target_net.load_state_dict(target_state)
+                else:
+                    target_net.load_state_dict(policy_net.state_dict())
+                opt_state = checkpoint.get("optimizer_state_dict")
+                if opt_state:
+                    optimizer.load_state_dict(opt_state)
+                best_score = checkpoint.get("best_score", best_score)
+                best_eval = checkpoint.get("best_eval", best_eval)
+                frame_idx = checkpoint.get("frame_idx", frame_idx)
+                start_episode = checkpoint.get("episode", start_episode)
+                print(f"✓ Resumed training from {args.resume} (episode={start_episode}, best_score={best_score:.2f})")
+            except (RuntimeError, KeyError, OSError) as e:
+                print(f"⚠ Warning: Failed to load checkpoint from {args.resume}: {e}")
+                print(f"  Starting fresh training instead. (The checkpoint file may be corrupted or incomplete.)")
+                args.resume = None
 
     for episode in range(start_episode + 1, args.episodes + 1):
         state = env.reset()
